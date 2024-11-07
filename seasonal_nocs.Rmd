@@ -1,0 +1,173 @@
+---
+title: "Seasonality in NOCs"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+runtime: shiny
+resource_files:
+- data/RTRA1446483_stat1115NOCp2.csv
+- data/RTRA3040048_stat2125NOCp1.csv
+- data/RTRA4340555_stat2125NOCp2.csv
+- data/RTRA5495420_stat1620NOCp2.csv
+- data/RTRA6895467_stat1115NOCp1.csv
+- data/RTRA8270443_stat1620NOCp1.csv
+- mapping/Occupational Characteristics w skills interests wages.xlsx
+---
+    
+```{r setup, include=FALSE}
+library(shiny)
+library(plotly)
+library(htmlwidgets)
+library(tidyverse)
+library(here)
+library(fpp3)
+library(janitor)
+library(conflicted)
+library(readxl)
+conflicts_prefer(dplyr::filter)
+my_dt <- function(tbbl) {
+  DT::datatable(tbbl,
+                filter = 'top',
+                extensions = "Buttons",
+                rownames = FALSE,
+                options = list(
+                  columnDefs = list(list(className = "dt-center", targets = "_all")),
+                  paging = TRUE,
+                  scrollX = TRUE,
+                  scrollY = TRUE,
+                  searching = TRUE,
+                  ordering = TRUE,
+                  dom = "Btip",
+                  buttons = list(
+                    list(extend = "csv", filename = "occupation_features"),
+                    list(extend = "excel", filename = "occupation_features")
+                  ),
+                  pageLength = 20
+                )
+  )
+}
+noc_names <- read_excel(here("mapping", 
+                             "Occupational Characteristics w skills interests wages.xlsx"))|>
+  clean_names()|>
+  select(noc, description)|>
+  mutate(NOC_5=str_remove_all(noc, "#"))
+
+tbbl <- vroom::vroom(here("data",list.files(here("data"))))|>
+  filter(!is.na(NOC_5),
+         !is.na(SYEAR),
+         !is.na(SMTH))|>
+  mutate(date=yearmonth(ymd(paste(SYEAR,SMTH,"01", sep = "/"))),
+         NOC_5=as.character(NOC_5))|>
+  select(-SYEAR,-SMTH)|>
+  filter(date<yearmonth(today())-month(1))|>
+  left_join(noc_names)|>
+  select(-noc)|>
+  unite(NOC_5, NOC_5, description, sep=": ")|>
+  tsibble(key=NOC_5, index = date)
+
+feats <- tbbl|>
+  features(`_COUNT_`, feat_stl)
+```
+
+Trend vs. Seasonality 
+=====================================  
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+### Click on a point to investigate
+
+```{r, fig.retina=2}
+js <- "
+function(el, x) {
+  el.on('plotly_click', function(d) {
+    var point = d.points[0];
+    Shiny.setInputValue('point', {text: point.text});
+  });
+}"
+renderPlotly({
+  plt <- ggplot(feats, aes(trend_strength,
+                        seasonal_strength_year,
+                        text=NOC_5))+
+  geom_point(alpha=.25)+
+  scale_y_continuous(trans="log10")
+  
+  ggplotly(plt, tooltip = "text")|>
+    onRender(js)
+})
+```
+
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### STL decompostition of `r renderUI({input$point$text})`
+
+```{r, fig.retina=2}
+renderPlot({
+  req(input$point)
+tbbl |>
+  filter(NOC_5==input$point$text)|>
+  model(stl = STL(`_COUNT_`, t.window=13, robust=TRUE))|>
+  components()|>
+  autoplot()+ 
+  theme(text=element_text(size=15))
+})
+```
+
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Subseries Plot of `r renderUI({input$point$text})`
+
+```{r, fig.retina=2}
+renderPlot({
+  req(input$point)
+tbbl |>
+  filter(NOC_5==input$point$text)|>
+  gg_subseries(`_COUNT_`)+
+  theme(text=element_text(size=15))
+})
+```
+
+
+
+### Season Plot of `r renderUI({input$point$text})`
+
+```{r, fig.retina=2}
+renderPlot({
+  req(input$point)
+tbbl |>
+  filter(NOC_5==input$point$text)|>
+  gg_season(`_COUNT_`, labels = "both")+
+  theme(text=element_text(size=15))
+})
+```
+
+Description of features
+======================================
+
+Quoting from Forecasting: Principles and Practice (3rd ed) by Rob J Hyndman and George Athanasopoulos:
+
+-   A time series decomposition can be used to measure the strength of trend and seasonality in a time series. 
+-   Recall that the decomposition is written as $y_t=T_t+S_t+R_t$, where $T_t$ is the smoothed trend component, $S_t$ is the seasonal component and $R_t$ is a remainder component. 
+-   For strongly trended data, the seasonally adjusted data should have much more variation than the remainder component.
+-   Therefore $Var(R_t)/Var(T_t+R_t)$ should be relatively small. But for data with little or no trend, the two variances should be approximately the same. 
+-   So we define the strength of trend as: $$FT=\max\left(0,1−\frac{Var(R_t)}{Var(T_t+R_t)}\right)$$. 
+-   This will give a measure of the strength of the trend between 0 and 1. Because the variance of the remainder might occasionally be even larger than the variance of the seasonally adjusted data, we set the minimal possible value of $FT$ equal to zero.
+
+-   The strength of seasonality is defined similarly, but with respect to the detrended data rather than the seasonally adjusted data: $$FS=\max\left(0,1−\frac{Var(R_t)}{Var(S_t+R_t)}\right)$$.
+-   A series with seasonal strength $FS$ close to 0 exhibits almost no seasonality, while a series with strong seasonality will have $FS$ close to 1 because $Var(R_t)$ will be much smaller than $Var(S_t+R_t)$.
+
+
+The feature data:
+=====================================  
+
+```{r}
+my_dt(feats[,1:3])
+```
+
+
+
+
