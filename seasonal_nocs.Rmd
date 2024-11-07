@@ -2,6 +2,7 @@
 title: "Seasonality in NOCs"
 output:
   flexdashboard::flex_dashboard:
+    source_code: https://github.com/bcgov/seasonal_nocs
     orientation: columns
 runtime: shiny
 resource_files:
